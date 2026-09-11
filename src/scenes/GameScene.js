@@ -25,6 +25,19 @@ const ENEMY_TYPES = {
   red: { color: 0xe74c3c, accent: 0xffd9d2, score: 60, w: 28, h: 26 },
 };
 
+const POWERUP_TYPES = {
+  rapid: { key: 'pu_rapid', color: 0xffe066, label: 'RAPID FIRE' },
+  spread: { key: 'pu_spread', color: 0x66ff99, label: 'SPREAD SHOT' },
+  shield: { key: 'pu_shield', color: 0x66ccff, label: 'SHIELD' },
+};
+const POWERUP_DROP_CHANCE = 0.18;
+const POWERUP_FALL_SPEED = 90;
+const RAPID_DURATION = 8000;
+const SPREAD_DURATION = 8000;
+const SHIELD_DURATION = 6000;
+const RAPID_COOLDOWN_MULTIPLIER = 0.4;
+const SPREAD_ANGLES_DEG = [-14, 0, 14];
+
 function rowType(row) {
   if (row === 0) return 'boss';
   return row % 2 === 0 ? 'blue' : 'red';
@@ -104,6 +117,9 @@ export class GameScene extends Phaser.Scene {
     this.enemies = [];
     this.gameOver = false;
     this.invulnUntil = 0;
+    this.rapidUntil = 0;
+    this.spreadUntil = 0;
+    this.shieldUntil = 0;
   }
 
   preload() {
@@ -121,6 +137,13 @@ export class GameScene extends Phaser.Scene {
     this.playerBullets = this.physics.add.group();
     this.enemyBullets = this.physics.add.group();
     this.enemyGroup = this.physics.add.group();
+    this.powerups = this.physics.add.group();
+
+    this.shieldRing = this.add
+      .circle(0, 0, 26, 0x66ccff, 0.2)
+      .setStrokeStyle(2, 0x66ccff, 0.9)
+      .setVisible(false)
+      .setDepth(5);
 
     this.cursors = this.input.keyboard.createCursorKeys();
     this.wasd = this.input.keyboard.addKeys('A,D');
@@ -133,12 +156,16 @@ export class GameScene extends Phaser.Scene {
     this.waveText = this.add
       .text(WIDTH / 2, HEIGHT / 2 - 60, '', { fontFamily: 'monospace', fontSize: '28px', color: '#f5c518' })
       .setOrigin(0.5);
+    this.buffText = this.add
+      .text(WIDTH - 10, 32, '', { fontFamily: 'monospace', fontSize: '12px', color: '#9be8ff' })
+      .setOrigin(1, 0);
 
     this.physics.add.overlap(this.playerBullets, this.enemyGroup, (bullet, enemySprite) =>
       this.onBulletHitEnemy(bullet, enemySprite)
     );
     this.physics.add.overlap(this.player, this.enemyBullets, (player, bullet) => this.onPlayerHitByBullet(bullet));
     this.physics.add.overlap(this.player, this.enemyGroup, (player, enemySprite) => this.onPlayerCollideEnemy(enemySprite));
+    this.physics.add.overlap(this.player, this.powerups, (player, powerup) => this.onCollectPowerup(powerup));
 
     this.updateLivesText();
     this.startWave();
@@ -208,6 +235,35 @@ export class GameScene extends Phaser.Scene {
     g.generateTexture('enemyBullet', 8, 8);
     g.clear();
 
+    // rapid fire powerup (speed chevrons)
+    g.fillStyle(POWERUP_TYPES.rapid.color, 1);
+    g.fillCircle(12, 12, 12);
+    g.fillStyle(0x2c2c2c, 1);
+    g.fillTriangle(6, 6, 6, 18, 13, 12);
+    g.fillTriangle(13, 6, 13, 18, 20, 12);
+    g.generateTexture('pu_rapid', 24, 24);
+    g.clear();
+
+    // spread shot powerup (three-way fan)
+    g.fillStyle(POWERUP_TYPES.spread.color, 1);
+    g.fillCircle(12, 12, 12);
+    g.fillStyle(0x0d3320, 1);
+    g.fillCircle(7, 16, 2.2);
+    g.fillCircle(12, 6, 2.2);
+    g.fillCircle(17, 16, 2.2);
+    g.generateTexture('pu_spread', 24, 24);
+    g.clear();
+
+    // shield powerup (ring)
+    g.fillStyle(POWERUP_TYPES.shield.color, 1);
+    g.fillCircle(12, 12, 12);
+    g.fillStyle(0xffffff, 1);
+    g.fillCircle(12, 12, 8);
+    g.fillStyle(POWERUP_TYPES.shield.color, 1);
+    g.fillCircle(12, 12, 5);
+    g.generateTexture('pu_shield', 24, 24);
+    g.clear();
+
     for (const [key, cfg] of Object.entries(ENEMY_TYPES)) {
       g.clear();
       drawEnemyShip(g, cfg, key === 'boss');
@@ -255,10 +311,11 @@ export class GameScene extends Phaser.Scene {
 
     this.stars.tilePositionY -= delta * 0.05;
 
-    this.handleInput(delta);
+    this.handleInput(delta, time);
     this.updateFormationSway(time);
     this.updateDiving(time, delta);
     this.cleanupBullets();
+    this.updatePowerupEffects(time);
 
     if (this.enemies.every((enemy) => enemy.state === 'dead')) {
       this.wave += 1;
@@ -266,7 +323,7 @@ export class GameScene extends Phaser.Scene {
     }
   }
 
-  handleInput(delta) {
+  handleInput(delta, time) {
     let vx = 0;
     if (this.cursors.left.isDown || this.wasd.A.isDown) vx -= 1;
     if (this.cursors.right.isDown || this.wasd.D.isDown) vx += 1;
@@ -274,10 +331,21 @@ export class GameScene extends Phaser.Scene {
 
     this.fireTimer -= delta;
     if (this.spaceKey.isDown && this.fireTimer <= 0) {
-      this.fireTimer = PLAYER_FIRE_COOLDOWN;
+      const rapidActive = time < this.rapidUntil;
+      this.fireTimer = rapidActive ? PLAYER_FIRE_COOLDOWN * RAPID_COOLDOWN_MULTIPLIER : PLAYER_FIRE_COOLDOWN;
+      this.fireBullets(time);
+    }
+  }
+
+  fireBullets(time) {
+    const spreadActive = time < this.spreadUntil;
+    const angles = spreadActive ? SPREAD_ANGLES_DEG : [0];
+
+    for (const angleDeg of angles) {
       const bullet = this.physics.add.sprite(this.player.x, this.player.y - 20, 'playerBullet');
       this.playerBullets.add(bullet);
-      bullet.setVelocityY(-PLAYER_BULLET_SPEED);
+      const rad = Phaser.Math.DegToRad(angleDeg - 90);
+      this.physics.velocityFromRotation(rad, PLAYER_BULLET_SPEED, bullet.body.velocity);
     }
   }
 
@@ -365,8 +433,62 @@ export class GameScene extends Phaser.Scene {
     this.score += wasDiving ? base * 2 : base;
     this.scoreText.setText(`SCORE ${this.score}`);
 
-    this.explode(enemy.sprite.x, enemy.sprite.y, ENEMY_TYPES[enemy.type].color);
+    const { x, y } = enemy.sprite;
+    this.explode(x, y, ENEMY_TYPES[enemy.type].color);
     enemy.sprite.destroy();
+
+    if (Math.random() < POWERUP_DROP_CHANCE) {
+      this.spawnPowerup(x, y);
+    }
+  }
+
+  spawnPowerup(x, y) {
+    const type = Phaser.Utils.Array.GetRandom(Object.keys(POWERUP_TYPES));
+    const sprite = this.physics.add.sprite(x, y, POWERUP_TYPES[type].key);
+    this.powerups.add(sprite);
+    sprite.setVelocityY(POWERUP_FALL_SPEED);
+    sprite.setData('type', type);
+  }
+
+  onCollectPowerup(powerupSprite) {
+    const type = powerupSprite.getData('type');
+    powerupSprite.destroy();
+
+    const now = this.time.now;
+    if (type === 'rapid') this.rapidUntil = now + RAPID_DURATION;
+    else if (type === 'spread') this.spreadUntil = now + SPREAD_DURATION;
+    else if (type === 'shield') this.shieldUntil = now + SHIELD_DURATION;
+
+    this.showPickupText(POWERUP_TYPES[type].label, POWERUP_TYPES[type].color);
+  }
+
+  showPickupText(label, color) {
+    const hex = `#${color.toString(16).padStart(6, '0')}`;
+    const text = this.add
+      .text(this.player.x, this.player.y - 30, label, {
+        fontFamily: 'monospace',
+        fontSize: '13px',
+        color: hex,
+      })
+      .setOrigin(0.5);
+
+    this.tweens.add({ targets: text, y: text.y - 30, alpha: 0, duration: 900, onComplete: () => text.destroy() });
+  }
+
+  updatePowerupEffects(time) {
+    const shieldOn = time < this.shieldUntil;
+    this.shieldRing.setVisible(shieldOn);
+    if (shieldOn) this.shieldRing.setPosition(this.player.x, this.player.y);
+
+    this.powerups.children.each((powerup) => {
+      if (powerup.y > HEIGHT + 20) powerup.destroy();
+    });
+
+    const parts = [];
+    if (time < this.rapidUntil) parts.push(`RAPID ${Math.ceil((this.rapidUntil - time) / 1000)}s`);
+    if (time < this.spreadUntil) parts.push(`SPREAD ${Math.ceil((this.spreadUntil - time) / 1000)}s`);
+    if (time < this.shieldUntil) parts.push(`SHIELD ${Math.ceil((this.shieldUntil - time) / 1000)}s`);
+    this.buffText.setText(parts.join('  '));
   }
 
   onBulletHitEnemy(bullet, enemySprite) {
@@ -389,6 +511,7 @@ export class GameScene extends Phaser.Scene {
 
   damagePlayer() {
     if (this.gameOver || this.time.now < this.invulnUntil) return;
+    if (this.time.now < this.shieldUntil) return;
 
     this.lives -= 1;
     this.updateLivesText();
