@@ -51,3 +51,33 @@ npm run dev
 
 - 모바일 터치 컨트롤
 - 최고 점수 저장 (localStorage)
+
+## 앱인토스(토스 인앱)로 출시하기
+
+토스 앱 안에서 미니앱으로 실행되는 [앱인토스](https://toss.im/apps-in-toss) SDK가 연결되어 있습니다.
+`npm run build`를 실행하면 `vite build`로 웹 번들을 만든 뒤 `ait build`가 이어서 실행되어
+프로젝트 루트에 `<appName>.ait` 파일이 생성됩니다.
+
+### 준비물 (코드와 별개로 직접 해야 하는 것)
+
+1. [앱인토스 개발자센터](https://developers-apps-in-toss.toss.im)에서 계정을 만들고 서비스 오픈 신청(사업자 정보 등록, 심사)을 진행하세요.
+2. 콘솔에서 앱을 등록하고 발급받은 앱 이름(케밥-케이스)을 `apps-in-toss.config.ts`의 `appName`에,
+   브랜드 색상/아이콘 등을 함께 채워주세요. (지금은 `galagon` / `#3182F6` placeholder가 들어가 있습니다.)
+3. `ait token add` 명령으로 콘솔에서 발급받은 API 키를 로컬에 등록하세요. (`ait deploy`에 필요)
+
+### 빌드 & 배포
+
+```bash
+npm install
+npm run build     # dist/ 웹 빌드 + galagon.ait 생성
+npm run deploy     # ait deploy: 콘솔에 업로드 후 심사 대기
+```
+
+개발 중 브라우저에서 앱인토스 브릿지(mock)를 확인하려면 `npm run dev`로 devtools 패널을 사용할 수 있습니다.
+
+### 출시 전 꼭 확인할 점
+
+- **키보드 조작이 전부입니다.** 토스 앱은 모바일 전용이라 실제 기기에는 물리 키보드가 없습니다.
+  스토어/토스 콘솔 심사를 통과하려면 위 "다음 단계 후보"의 **모바일 터치 컨트롤**을 먼저 구현해야
+  실제 사용자가 플레이할 수 있습니다.
+- 화면 비율/터치 영역이 다양한 기기에서 잘리지 않는지 확인하세요.
