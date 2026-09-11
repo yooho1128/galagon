@@ -38,6 +38,13 @@ const SHIELD_DURATION = 6000;
 const RAPID_COOLDOWN_MULTIPLIER = 0.4;
 const SPREAD_ANGLES_DEG = [-14, 0, 14];
 
+const CAPTURE_ATTEMPT_CHANCE = 0.35;
+const CAPTURE_HOVER_Y_RATIO = 0.34;
+const CAPTURE_PHASE = { descendEnd: 0.32, telegraphEnd: 0.5, activeEnd: 0.78 };
+const CAPTURE_BEAM_COLOR = 0x9b59d0;
+const CAPTURE_BEAM_HALF_WIDTH = 22;
+const RESCUE_FALL_SPEED = 70;
+
 function rowType(row) {
   if (row === 0) return 'boss';
   return row % 2 === 0 ? 'blue' : 'red';
@@ -120,6 +127,7 @@ export class GameScene extends Phaser.Scene {
     this.rapidUntil = 0;
     this.spreadUntil = 0;
     this.shieldUntil = 0;
+    this.playerCaptured = false;
   }
 
   preload() {
@@ -138,6 +146,7 @@ export class GameScene extends Phaser.Scene {
     this.enemyBullets = this.physics.add.group();
     this.enemyGroup = this.physics.add.group();
     this.powerups = this.physics.add.group();
+    this.rescueGroup = this.physics.add.group();
 
     this.shieldRing = this.add
       .circle(0, 0, 26, 0x66ccff, 0.2)
@@ -166,6 +175,7 @@ export class GameScene extends Phaser.Scene {
     this.physics.add.overlap(this.player, this.enemyBullets, (player, bullet) => this.onPlayerHitByBullet(bullet));
     this.physics.add.overlap(this.player, this.enemyGroup, (player, enemySprite) => this.onPlayerCollideEnemy(enemySprite));
     this.physics.add.overlap(this.player, this.powerups, (player, powerup) => this.onCollectPowerup(powerup));
+    this.physics.add.overlap(this.player, this.rescueGroup, (player, rescue) => this.onRescueCollect(rescue));
 
     this.updateLivesText();
     this.startWave();
@@ -274,7 +284,11 @@ export class GameScene extends Phaser.Scene {
   }
 
   startWave() {
-    this.enemies.forEach((enemy) => enemy.sprite.destroy());
+    this.enemies.forEach((enemy) => {
+      enemy.sprite.destroy();
+      enemy.captiveSprite?.destroy();
+      enemy.beamGraphic?.destroy();
+    });
     this.enemies = [];
 
     for (let row = 0; row < FORMATION_ROWS; row++) {
@@ -316,6 +330,7 @@ export class GameScene extends Phaser.Scene {
     this.updateDiving(time, delta);
     this.cleanupBullets();
     this.updatePowerupEffects(time);
+    this.cleanupRescues();
 
     if (this.enemies.every((enemy) => enemy.state === 'dead')) {
       this.wave += 1;
@@ -324,6 +339,11 @@ export class GameScene extends Phaser.Scene {
   }
 
   handleInput(delta, time) {
+    if (this.playerCaptured) {
+      this.player.setVelocity(0, 0);
+      return;
+    }
+
     let vx = 0;
     if (this.cursors.left.isDown || this.wasd.A.isDown) vx -= 1;
     if (this.cursors.right.isDown || this.wasd.D.isDown) vx += 1;
@@ -355,6 +375,7 @@ export class GameScene extends Phaser.Scene {
       if (enemy.state === 'formation') {
         enemy.sprite.x = enemy.baseX + offset;
         enemy.sprite.y = enemy.baseY;
+        this.syncCaptive(enemy);
       }
     }
   }
@@ -374,17 +395,27 @@ export class GameScene extends Phaser.Scene {
         enemy.state = 'formation';
         enemy.sprite.x = enemy.baseX;
         enemy.sprite.y = enemy.baseY;
+        if (enemy.beamGraphic) {
+          enemy.beamGraphic.destroy();
+          enemy.beamGraphic = null;
+        }
+        this.syncCaptive(enemy);
         continue;
       }
 
-      const pos = samplePath(enemy.divePath, enemy.diveT);
-      enemy.sprite.x = pos.x;
-      enemy.sprite.y = pos.y;
+      if (enemy.diveMode === 'capture') {
+        this.updateCaptureDive(enemy, time);
+      } else {
+        const pos = samplePath(enemy.divePath, enemy.diveT);
+        enemy.sprite.x = pos.x;
+        enemy.sprite.y = pos.y;
 
-      if (!enemy.hasFired && enemy.diveT > 0.45) {
-        enemy.hasFired = true;
-        this.enemyFire(enemy.sprite.x, enemy.sprite.y);
+        if (!enemy.hasFired && enemy.diveT > 0.45) {
+          enemy.hasFired = true;
+          this.enemyFire(enemy.sprite.x, enemy.sprite.y);
+        }
       }
+      this.syncCaptive(enemy);
     }
   }
 
@@ -397,6 +428,20 @@ export class GameScene extends Phaser.Scene {
     enemy.diveT = 0;
     enemy.hasFired = false;
 
+    const canCapture = enemy.type === 'boss' && !enemy.hasCaptive;
+    enemy.diveMode = canCapture && Math.random() < CAPTURE_ATTEMPT_CHANCE ? 'capture' : 'attack';
+
+    if (enemy.diveMode === 'capture') {
+      enemy.captureHoverX = Phaser.Math.Clamp(this.player.x, 40, WIDTH - 40);
+      enemy.captureHoverY = HEIGHT * CAPTURE_HOVER_Y_RATIO;
+      enemy.captureTriggered = false;
+      enemy.beamGraphic = this.add
+        .rectangle(enemy.captureHoverX, enemy.captureHoverY, 6, 0, CAPTURE_BEAM_COLOR, 0.5)
+        .setOrigin(0.5, 0)
+        .setDepth(4);
+      return;
+    }
+
     const startX = enemy.baseX;
     const startY = enemy.baseY;
     const targetX = Phaser.Math.Clamp(this.player.x + Phaser.Math.Between(-40, 40), 30, WIDTH - 30);
@@ -407,6 +452,62 @@ export class GameScene extends Phaser.Scene {
       { x: targetX, y: HEIGHT - 90 },
       { x: startX, y: startY },
     ];
+  }
+
+  updateCaptureDive(enemy, time) {
+    const t = enemy.diveT;
+    const { descendEnd, telegraphEnd, activeEnd } = CAPTURE_PHASE;
+
+    if (t <= descendEnd) {
+      const localT = Phaser.Math.Easing.Sine.Out(t / descendEnd);
+      enemy.sprite.x = Phaser.Math.Linear(enemy.baseX, enemy.captureHoverX, localT);
+      enemy.sprite.y = Phaser.Math.Linear(enemy.baseY, enemy.captureHoverY, localT);
+      return;
+    }
+
+    if (t <= activeEnd) {
+      enemy.sprite.x = enemy.captureHoverX;
+      enemy.sprite.y = enemy.captureHoverY;
+
+      const beam = enemy.beamGraphic;
+      const beamTop = enemy.sprite.y + 14;
+      if (t <= telegraphEnd) {
+        const pulse = 0.3 + 0.3 * Math.abs(Math.sin(time / 80));
+        beam.setPosition(enemy.sprite.x, beamTop);
+        beam.width = 6;
+        beam.height = HEIGHT - beamTop;
+        beam.setFillStyle(CAPTURE_BEAM_COLOR, pulse);
+      } else {
+        beam.setPosition(enemy.sprite.x, beamTop);
+        beam.width = CAPTURE_BEAM_HALF_WIDTH * 2;
+        beam.height = HEIGHT - beamTop;
+        beam.setFillStyle(CAPTURE_BEAM_COLOR, 0.55);
+
+        if (!enemy.captureTriggered && !this.playerCaptured && !this.gameOver) {
+          const withinBeam = Math.abs(this.player.x - enemy.captureHoverX) < CAPTURE_BEAM_HALF_WIDTH;
+          const playerSafe = time < this.invulnUntil || time < this.shieldUntil;
+          if (withinBeam && !playerSafe) {
+            enemy.captureTriggered = true;
+            this.capturePlayer(enemy);
+          }
+        }
+      }
+      return;
+    }
+
+    const localT = Phaser.Math.Easing.Sine.In((t - activeEnd) / (1 - activeEnd));
+    enemy.sprite.x = Phaser.Math.Linear(enemy.captureHoverX, enemy.baseX, localT);
+    enemy.sprite.y = Phaser.Math.Linear(enemy.captureHoverY, enemy.baseY, localT);
+    if (enemy.beamGraphic) {
+      enemy.beamGraphic.destroy();
+      enemy.beamGraphic = null;
+    }
+  }
+
+  syncCaptive(enemy) {
+    if (enemy.captiveSprite) {
+      enemy.captiveSprite.setPosition(enemy.sprite.x, enemy.sprite.y + 20);
+    }
   }
 
   enemyFire(x, y) {
@@ -437,9 +538,90 @@ export class GameScene extends Phaser.Scene {
     this.explode(x, y, ENEMY_TYPES[enemy.type].color);
     enemy.sprite.destroy();
 
-    if (Math.random() < POWERUP_DROP_CHANCE) {
+    if (enemy.beamGraphic) {
+      enemy.beamGraphic.destroy();
+      enemy.beamGraphic = null;
+    }
+
+    if (enemy.hasCaptive) {
+      this.releaseCaptive(enemy);
+    } else if (Math.random() < POWERUP_DROP_CHANCE) {
       this.spawnPowerup(x, y);
     }
+  }
+
+  capturePlayer(enemy) {
+    if (this.playerCaptured) return;
+    this.playerCaptured = true;
+    // Disable the body immediately (not just on tween-complete) so the
+    // pull-in animation can't also trigger a normal bullet/collision hit.
+    this.player.body.enable = false;
+
+    this.tweens.add({
+      targets: this.player,
+      x: enemy.sprite.x,
+      y: enemy.sprite.y + 20,
+      duration: 400,
+      ease: 'Sine.easeIn',
+      onComplete: () => {
+        this.player.setVisible(false);
+
+        enemy.hasCaptive = true;
+        enemy.captiveSprite = this.add
+          .sprite(enemy.sprite.x, enemy.sprite.y + 20, 'player')
+          .setScale(0.7)
+          .setTint(0x777777)
+          .setDepth(3);
+
+        this.lives -= 1;
+        this.updateLivesText();
+        this.showPickupText('CAPTURED!', CAPTURE_BEAM_COLOR);
+
+        if (this.lives <= 0) {
+          this.endGame();
+          return;
+        }
+        this.time.delayedCall(700, () => this.respawnAfterCapture());
+      },
+    });
+  }
+
+  respawnAfterCapture() {
+    this.playerCaptured = false;
+    this.player.setPosition(WIDTH / 2, HEIGHT - 60);
+    this.player.setVisible(true);
+    this.player.body.enable = true;
+    this.player.setAlpha(0.4);
+    this.invulnUntil = this.time.now + 1500;
+    this.tweens.add({ targets: this.player, alpha: 1, duration: 1200 });
+  }
+
+  releaseCaptive(enemy) {
+    const sprite = enemy.captiveSprite;
+    enemy.captiveSprite = null;
+    enemy.hasCaptive = false;
+    if (!sprite) return;
+
+    sprite.clearTint();
+    this.physics.add.existing(sprite);
+    this.rescueGroup.add(sprite);
+    // A plain sprite promoted via physics.add.existing() only gets a `.body`,
+    // not the Arcade.Sprite convenience methods - set velocity on the body itself.
+    sprite.body.setVelocity(0, RESCUE_FALL_SPEED);
+    this.tweens.add({ targets: sprite, alpha: 0.5, duration: 300, yoyo: true, repeat: -1 });
+  }
+
+  onRescueCollect(sprite) {
+    sprite.destroy();
+    this.lives += 1;
+    this.updateLivesText();
+    this.showPickupText('RESCUED! +1 LIFE', CAPTURE_BEAM_COLOR);
+  }
+
+  cleanupRescues() {
+    this.rescueGroup.children.each((sprite) => {
+      if (sprite.y > HEIGHT + 20) sprite.destroy();
+    });
   }
 
   spawnPowerup(x, y) {
