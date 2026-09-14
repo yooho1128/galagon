@@ -2,7 +2,7 @@
 <html lang="ko">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
     <title>Galagon</title>
     <style>
       html, body {
@@ -11,6 +11,8 @@
         background: #05060a;
         overflow: hidden;
         height: 100%;
+        touch-action: none;
+        overscroll-behavior: none;
       }
       #app {
         display: flex;
@@ -20,6 +22,7 @@
       }
       canvas {
         image-rendering: pixelated;
+        touch-action: none;
       }
     </style>
   </head>

@@ -7,6 +7,10 @@ const config = {
   width: 480,
   height: 640,
   backgroundColor: '#05060a',
+  scale: {
+    mode: Phaser.Scale.FIT,
+    autoCenter: Phaser.Scale.CENTER_BOTH,
+  },
   physics: {
     default: 'arcade',
     arcade: {
