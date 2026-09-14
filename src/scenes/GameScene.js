@@ -158,6 +158,23 @@ export class GameScene extends Phaser.Scene {
     this.wasd = this.input.keyboard.addKeys('A,D');
     this.spaceKey = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.SPACE);
 
+    // Touch/mouse control: drag anywhere to follow the pointer's x, firing
+    // automatically while held down. Keeps the game playable with one thumb
+    // and no on-screen buttons eating into the play field.
+    this.pointerActive = false;
+    this.pointerTargetX = this.player.x;
+    this.input.on('pointerdown', (pointer) => {
+      if (this.gameOver) return;
+      this.pointerActive = true;
+      this.pointerTargetX = pointer.x;
+    });
+    this.input.on('pointermove', (pointer) => {
+      if (this.pointerActive) this.pointerTargetX = pointer.x;
+    });
+    this.input.on('pointerup', () => {
+      this.pointerActive = false;
+    });
+
     this.scoreText = this.add.text(10, 8, 'SCORE 0', { fontFamily: 'monospace', fontSize: '18px', color: '#ffffff' });
     this.livesText = this.add
       .text(WIDTH - 10, 8, '', { fontFamily: 'monospace', fontSize: '18px', color: '#ffffff' })
@@ -168,6 +185,15 @@ export class GameScene extends Phaser.Scene {
     this.buffText = this.add
       .text(WIDTH - 10, 32, '', { fontFamily: 'monospace', fontSize: '12px', color: '#9be8ff' })
       .setOrigin(1, 0);
+
+    const touchHint = this.add
+      .text(WIDTH / 2, HEIGHT - 14, '터치 후 드래그로 이동 · 누르고 있으면 자동 발사', {
+        fontFamily: 'monospace',
+        fontSize: '11px',
+        color: '#8899aa',
+      })
+      .setOrigin(0.5);
+    this.tweens.add({ targets: touchHint, alpha: 0, delay: 3500, duration: 800, onComplete: () => touchHint.destroy() });
 
     this.physics.add.overlap(this.playerBullets, this.enemyGroup, (bullet, enemySprite) =>
       this.onBulletHitEnemy(bullet, enemySprite)
@@ -344,13 +370,18 @@ export class GameScene extends Phaser.Scene {
       return;
     }
 
-    let vx = 0;
-    if (this.cursors.left.isDown || this.wasd.A.isDown) vx -= 1;
-    if (this.cursors.right.isDown || this.wasd.D.isDown) vx += 1;
-    this.player.setVelocityX(vx * PLAYER_SPEED);
+    if (this.pointerActive) {
+      this.player.x = Phaser.Math.Clamp(this.pointerTargetX, 24, WIDTH - 24);
+      this.player.setVelocityX(0);
+    } else {
+      let vx = 0;
+      if (this.cursors.left.isDown || this.wasd.A.isDown) vx -= 1;
+      if (this.cursors.right.isDown || this.wasd.D.isDown) vx += 1;
+      this.player.setVelocityX(vx * PLAYER_SPEED);
+    }
 
     this.fireTimer -= delta;
-    if (this.spaceKey.isDown && this.fireTimer <= 0) {
+    if ((this.spaceKey.isDown || this.pointerActive) && this.fireTimer <= 0) {
       const rapidActive = time < this.rapidUntil;
       this.fireTimer = rapidActive ? PLAYER_FIRE_COOLDOWN * RAPID_COOLDOWN_MULTIPLIER : PLAYER_FIRE_COOLDOWN;
       this.fireBullets(time);
@@ -739,7 +770,7 @@ export class GameScene extends Phaser.Scene {
       .text(WIDTH / 2, HEIGHT / 2 - 20, 'GAME OVER', { fontFamily: 'monospace', fontSize: '32px', color: '#ff5555' })
       .setOrigin(0.5);
     this.add
-      .text(WIDTH / 2, HEIGHT / 2 + 20, `SCORE ${this.score}  -  Press SPACE to restart`, {
+      .text(WIDTH / 2, HEIGHT / 2 + 20, `SCORE ${this.score}  -  Press SPACE or tap to restart`, {
         fontFamily: 'monospace',
         fontSize: '15px',
         color: '#ffffff',
@@ -747,5 +778,6 @@ export class GameScene extends Phaser.Scene {
       .setOrigin(0.5);
 
     this.input.keyboard.once('keydown-SPACE', () => this.scene.restart());
+    this.input.once('pointerdown', () => this.scene.restart());
   }
 }

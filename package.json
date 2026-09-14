@@ -5,13 +5,16 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "vite build",
-    "preview": "vite preview"
+    "build": "vite build && ait build",
+    "preview": "vite preview",
+    "deploy": "ait deploy"
   },
   "dependencies": {
-    "phaser": "^3.80.1"
+    "phaser": "^3.80.1",
+    "@apps-in-toss/web-framework": "^3.4.0"
   },
   "devDependencies": {
-    "vite": "^5.4.0"
+    "vite": "^5.4.0",
+    "@apps-in-toss/devtools": "^3.2.0"
   }
 }
